@@ -1,23 +1,11 @@
 import { Bot, InlineKeyboard, type Context } from "grammy"
 import { appendOrder, clearState, getState, setState, type FsmState } from "./storage"
 
-/**
- * Telegram bot for selling the poetry book «Хто ти, любове?».
- *
- * The bot is stateless: every user's current step (FSM) lives in Google Sheets,
- * so it works correctly on Vercel serverless functions that "sleep" between requests.
- *
- * Required env vars:
- *   TELEGRAM_BOT_TOKEN  - token from @BotFather
- *   MONOBANK_JAR_URL    - link to the Monobank jar for payment
- *   ADMIN_TELEGRAM_ID   - admin chat id that receives new-order notifications
- */
-
 const BOOK_PRICE = "350 грн"
 
-// FSM step constants.
 const STATE = {
   WAITING_FULL_NAME: "WAITING_FOR_FULL_NAME",
+  WAITING_PHONE: "WAITING_FOR_PHONE",
   WAITING_CITY: "WAITING_FOR_CITY",
   WAITING_POST_OFFICE: "WAITING_FOR_POST_OFFICE",
   WAITING_PAYMENT: "WAITING_FOR_PAYMENT",
@@ -45,13 +33,13 @@ function emptyState(ctx: Context, state: string): FsmState {
     username: ctx.from?.username ?? "",
     state,
     fullName: "",
+    phone: "",
     city: "",
     postOffice: "",
   }
 }
 
 function registerHandlers(bot: Bot) {
-  // /start — welcome message with book info and an "Order" button.
   bot.command("start", async (ctx) => {
     await clearState(ctx.from!.id)
     const keyboard = new InlineKeyboard().text("Замовити книгу", "order_start")
@@ -74,23 +62,20 @@ function registerHandlers(bot: Bot) {
     )
   })
 
-  // /cancel — reset the current order.
   bot.command("cancel", async (ctx) => {
     await clearState(ctx.from!.id)
     await ctx.reply("Замовлення скасовано. Щоб почати знову, натисніть /start")
   })
 
-  // "Order" button — begin the wizard at step 1 (full name).
   bot.callbackQuery("order_start", async (ctx) => {
     await ctx.answerCallbackQuery()
     const state = emptyState(ctx, STATE.WAITING_FULL_NAME)
     await setState(state)
     await ctx.reply(
-      "Крок 1 з 4 ✍️\n\nВведіть, будь ласка, ПІБ отримувача (Прізвище, Ім'я та По батькові):",
+      "Крок 1 з 5 ✍️\n\nВведіть, будь ласка, ПІБ отримувача (Прізвище, Ім'я та По батькові):",
     )
   })
 
-  // Photo handler — final step: screenshot of the payment receipt.
   bot.on("message:photo", async (ctx) => {
     const state = await getState(ctx.from.id)
     if (!state || state.state !== STATE.WAITING_PAYMENT) {
@@ -100,7 +85,6 @@ function registerHandlers(bot: Bot) {
       return
     }
 
-    // Highest-resolution photo is the last in the array.
     const photos = ctx.message.photo
     const fileId = photos[photos.length - 1].file_id
 
@@ -108,6 +92,7 @@ function registerHandlers(bot: Bot) {
       telegramId: state.telegramId,
       username: state.username,
       fullName: state.fullName,
+      phone: state.phone,
       city: state.city,
       postOffice: state.postOffice,
       screenshotFileId: fileId,
@@ -131,10 +116,9 @@ function registerHandlers(bot: Bot) {
     )
   })
 
-  // Text handler — drives the multi-step wizard.
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text.trim()
-    if (text.startsWith("/")) return // commands are handled above
+    if (text.startsWith("/")) return
 
     const state = await getState(ctx.from.id)
     if (!state) {
@@ -149,9 +133,22 @@ function registerHandlers(bot: Bot) {
           return
         }
         state.fullName = text
+        state.state = STATE.WAITING_PHONE
+        await setState(state)
+        await ctx.reply("Крок 2 з 5 📞\n\nВведіть номер телефону отримувача (наприклад: +380671234567):")
+        return
+      }
+
+      case STATE.WAITING_PHONE: {
+        const phone = text.replace(/\s/g, "")
+        if (!/^\+?[\d]{10,13}$/.test(phone)) {
+          await ctx.reply("Будь ласка, введіть коректний номер телефону (наприклад: +380671234567).")
+          return
+        }
+        state.phone = phone
         state.state = STATE.WAITING_CITY
         await setState(state)
-        await ctx.reply("Крок 2 з 4 🏙\n\nВкажіть населений пункт (місто/село) для доставки:")
+        await ctx.reply("Крок 3 з 5 🏙\n\nВкажіть населений пункт (місто/село) для доставки:")
         return
       }
 
@@ -164,7 +161,7 @@ function registerHandlers(bot: Bot) {
         state.state = STATE.WAITING_POST_OFFICE
         await setState(state)
         await ctx.reply(
-          "Крок 3 з 4 🚚\n\nВкажіть номер або адресу відділення/поштомату Нової Пошти:",
+          "Крок 4 з 5 🚚\n\nВкажіть номер або адресу відділення/поштомату Нової Пошти:",
         )
         return
       }
@@ -180,11 +177,12 @@ function registerHandlers(bot: Bot) {
 
         const jarUrl = process.env.MONOBANK_JAR_URL ?? ""
         const summary = [
-          "Крок 4 з 4 💳",
+          "Крок 5 з 5 💳",
           "",
           "Перевірте, будь ласка, дані замовлення:",
           "",
           `📝 ПІБ: ${state.fullName}`,
+          `📞 Телефон: ${state.phone}`,
           `📍 Місто: ${state.city}`,
           `🚚 Нова Пошта: ${state.postOffice}`,
           "",
@@ -218,9 +216,6 @@ function registerHandlers(bot: Bot) {
   })
 }
 
-/**
- * Forward a formatted report + the payment screenshot to the admin chat.
- */
 async function notifyAdmin(ctx: Context, state: FsmState, fileId: string) {
   const adminId = process.env.ADMIN_TELEGRAM_ID
   if (!adminId) return
@@ -232,6 +227,7 @@ async function notifyAdmin(ctx: Context, state: FsmState, fileId: string) {
     "",
     `👤 Покупець: ${usernameLabel}`,
     `📝 ПІБ: ${state.fullName}`,
+    `📞 Телефон: ${state.phone}`,
     `📍 Місто: ${state.city}`,
     `🚚 Нова Пошта: ${state.postOffice}`,
     "",
@@ -241,6 +237,6 @@ async function notifyAdmin(ctx: Context, state: FsmState, fileId: string) {
   try {
     await ctx.api.sendPhoto(adminId, fileId, { caption })
   } catch (err) {
-    console.log("[v0] Failed to notify admin:", (err as Error).message)
+    console.log("[bot] Failed to notify admin:", (err as Error).message)
   }
 }
