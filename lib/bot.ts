@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, type Context } from "grammy"
+import { Bot, InlineKeyboard, Keyboard, type Context } from "grammy"
 import { appendOrder, clearState, getState, setState, type FsmState } from "./storage"
 
 const BOOK_PRICE = "350 грн"
@@ -10,6 +10,8 @@ const STATE = {
   WAITING_POST_OFFICE: "WAITING_FOR_POST_OFFICE",
   WAITING_PAYMENT: "WAITING_FOR_PAYMENT",
 } as const
+
+const REMOVE_KEYBOARD = { remove_keyboard: true } as const
 
 let botInstance: Bot | null = null
 
@@ -33,6 +35,10 @@ function emptyState(ctx: Context, state: string): FsmState {
     city: "",
     postOffice: "",
   }
+}
+
+function phoneKeyboard() {
+  return new Keyboard().requestContact("📱 Поділитись номером телефону").resized()
 }
 
 function registerHandlers(bot: Bot) {
@@ -59,7 +65,9 @@ function registerHandlers(bot: Bot) {
 
   bot.command("cancel", async (ctx) => {
     await clearState(ctx.from!.id)
-    await ctx.reply("Замовлення скасовано. Щоб почати знову, натисніть /start")
+    await ctx.reply("Замовлення скасовано. Щоб почати знову, натисніть /start", {
+      reply_markup: REMOVE_KEYBOARD,
+    })
   })
 
   bot.callbackQuery("order_start", async (ctx) => {
@@ -67,6 +75,22 @@ function registerHandlers(bot: Bot) {
     const state = emptyState(ctx, STATE.WAITING_FULL_NAME)
     await setState(state)
     await ctx.reply("Крок 1 з 5 ✍️\n\nВведіть, будь ласка, ПІБ отримувача (Прізвище, Ім'я та По батькові):")
+  })
+
+  // Handle shared contact (phone button)
+  bot.on("message:contact", async (ctx) => {
+    const state = await getState(ctx.from.id)
+    if (!state || state.state !== STATE.WAITING_PHONE) {
+      await ctx.reply("Дякую, але зараз номер телефону не очікується.")
+      return
+    }
+    const phone = ctx.message.contact.phone_number
+    state.phone = phone.startsWith("+") ? phone : `+${phone}`
+    state.state = STATE.WAITING_CITY
+    await setState(state)
+    await ctx.reply("Крок 3 з 5 🏙\n\nВкажіть населений пункт (місто/село) для доставки:", {
+      reply_markup: REMOVE_KEYBOARD,
+    })
   })
 
   bot.on("message:photo", async (ctx) => {
@@ -119,19 +143,27 @@ function registerHandlers(bot: Bot) {
         state.fullName = text
         state.state = STATE.WAITING_PHONE
         await setState(state)
-        await ctx.reply("Крок 2 з 5 📞\n\nВведіть номер телефону отримувача (наприклад: +380671234567):")
+        await ctx.reply(
+          "Крок 2 з 5 📞\n\nНатисніть кнопку нижче, щоб поділитись номером, або введіть вручну (наприклад: +380671234567):",
+          { reply_markup: phoneKeyboard() },
+        )
         return
       }
       case STATE.WAITING_PHONE: {
         const phone = text.replace(/\s/g, "")
         if (!/^\+?[\d]{10,13}$/.test(phone)) {
-          await ctx.reply("Будь ласка, введіть коректний номер телефону (наприклад: +380671234567).")
+          await ctx.reply(
+            "Будь ласка, введіть коректний номер телефону (наприклад: +380671234567) або скористайтесь кнопкою 👇",
+            { reply_markup: phoneKeyboard() },
+          )
           return
         }
-        state.phone = phone
+        state.phone = phone.startsWith("+") ? phone : `+${phone}`
         state.state = STATE.WAITING_CITY
         await setState(state)
-        await ctx.reply("Крок 3 з 5 🏙\n\nВкажіть населений пункт (місто/село) для доставки:")
+        await ctx.reply("Крок 3 з 5 🏙\n\nВкажіть населений пункт (місто/село) для доставки:", {
+          reply_markup: REMOVE_KEYBOARD,
+        })
         return
       }
       case STATE.WAITING_CITY: {
