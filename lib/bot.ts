@@ -15,12 +15,8 @@ let botInstance: Bot | null = null
 
 export function getBot(): Bot {
   if (botInstance) return botInstance
-
   const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) {
-    throw new Error("Missing TELEGRAM_BOT_TOKEN env var")
-  }
-
+  if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN env var")
   const bot = new Bot(token)
   registerHandlers(bot)
   botInstance = bot
@@ -43,7 +39,6 @@ function registerHandlers(bot: Bot) {
   bot.command("start", async (ctx) => {
     await clearState(ctx.from!.id)
     const keyboard = new InlineKeyboard().text("Замовити книгу", "order_start")
-
     await ctx.reply(
       [
         "Вітаю! 📖",
@@ -71,23 +66,17 @@ function registerHandlers(bot: Bot) {
     await ctx.answerCallbackQuery()
     const state = emptyState(ctx, STATE.WAITING_FULL_NAME)
     await setState(state)
-    await ctx.reply(
-      "Крок 1 з 5 ✍️\n\nВведіть, будь ласка, ПІБ отримувача (Прізвище, Ім'я та По батькові):",
-    )
+    await ctx.reply("Крок 1 з 5 ✍️\n\nВведіть, будь ласка, ПІБ отримувача (Прізвище, Ім'я та По батькові):")
   })
 
   bot.on("message:photo", async (ctx) => {
     const state = await getState(ctx.from.id)
     if (!state || state.state !== STATE.WAITING_PAYMENT) {
-      await ctx.reply(
-        "Дякую за фото, але зараз воно не очікується. Щоб оформити замовлення, натисніть /start",
-      )
+      await ctx.reply("Дякую за фото, але зараз воно не очікується. Щоб оформити замовлення, натисніть /start")
       return
     }
-
     const photos = ctx.message.photo
     const fileId = photos[photos.length - 1].file_id
-
     const orderId = await appendOrder({
       telegramId: state.telegramId,
       username: state.username,
@@ -98,18 +87,15 @@ function registerHandlers(bot: Bot) {
       screenshotFileId: fileId,
       status: "pending",
     })
-
     await clearState(ctx.from.id)
     await notifyAdmin(ctx, state, fileId)
-
     await ctx.reply(
       [
         "Дякуємо за замовлення! 🙏",
         "",
         `Номер замовлення: ${orderId}`,
         "",
-        "Ваш скріншот отримано. Замовлення прийнято в обробку — ми перевіримо оплату " +
-          "та надішлемо книгу Новою Поштою найближчим часом.",
+        "Ваш скріншот отримано. Замовлення прийнято в обробку — ми перевіримо оплату та надішлемо книгу Новою Поштою найближчим часом.",
         "",
         "Гарного дня! 💛",
       ].join("\n"),
@@ -119,13 +105,11 @@ function registerHandlers(bot: Bot) {
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text.trim()
     if (text.startsWith("/")) return
-
     const state = await getState(ctx.from.id)
     if (!state) {
       await ctx.reply("Щоб оформити замовлення книги, натисніть /start")
       return
     }
-
     switch (state.state) {
       case STATE.WAITING_FULL_NAME: {
         if (text.length < 5) {
@@ -138,7 +122,6 @@ function registerHandlers(bot: Bot) {
         await ctx.reply("Крок 2 з 5 📞\n\nВведіть номер телефону отримувача (наприклад: +380671234567):")
         return
       }
-
       case STATE.WAITING_PHONE: {
         const phone = text.replace(/\s/g, "")
         if (!/^\+?[\d]{10,13}$/.test(phone)) {
@@ -151,7 +134,6 @@ function registerHandlers(bot: Bot) {
         await ctx.reply("Крок 3 з 5 🏙\n\nВкажіть населений пункт (місто/село) для доставки:")
         return
       }
-
       case STATE.WAITING_CITY: {
         if (text.length < 2) {
           await ctx.reply("Будь ласка, вкажіть коректну назву населеного пункту.")
@@ -160,12 +142,9 @@ function registerHandlers(bot: Bot) {
         state.city = text
         state.state = STATE.WAITING_POST_OFFICE
         await setState(state)
-        await ctx.reply(
-          "Крок 4 з 5 🚚\n\nВкажіть номер або адресу відділення/поштомату Нової Пошти:",
-        )
+        await ctx.reply("Крок 4 з 5 🚚\n\nВкажіть номер або адресу відділення/поштомату Нової Пошти:")
         return
       }
-
       case STATE.WAITING_POST_OFFICE: {
         if (text.length < 1) {
           await ctx.reply("Будь ласка, вкажіть відділення Нової Пошти.")
@@ -174,7 +153,6 @@ function registerHandlers(bot: Bot) {
         state.postOffice = text
         state.state = STATE.WAITING_PAYMENT
         await setState(state)
-
         const jarUrl = process.env.MONOBANK_JAR_URL ?? ""
         const summary = [
           "Крок 5 з 5 💳",
@@ -188,27 +166,15 @@ function registerHandlers(bot: Bot) {
           "",
           `💰 До оплати: ${BOOK_PRICE}`,
         ]
-        if (jarUrl) {
-          summary.push("", `Оплатити можна за посиланням на банку:\n${jarUrl}`)
-        }
-        summary.push(
-          "",
-          "Після оплати, будь ласка, надішліть сюди скріншот квитанції 📸",
-        )
-
-        await ctx.reply(summary.join("\n"), {
-          link_preview_options: { is_disabled: true },
-        })
+        if (jarUrl) summary.push("", `Оплатити можна за посиланням на банку:\n${jarUrl}`)
+        summary.push("", "Після оплати, будь ласка, надішліть сюди скріншот квитанції 📸")
+        await ctx.reply(summary.join("\n"), { link_preview_options: { is_disabled: true } })
         return
       }
-
       case STATE.WAITING_PAYMENT: {
-        await ctx.reply(
-          "Очікую скріншот квитанції про оплату 📸. Будь ласка, надішліть фото.",
-        )
+        await ctx.reply("Очікую скріншот квитанції про оплату 📸. Будь ласка, надішліть фото.")
         return
       }
-
       default: {
         await ctx.reply("Щоб оформити замовлення, натисніть /start")
       }
@@ -219,9 +185,7 @@ function registerHandlers(bot: Bot) {
 async function notifyAdmin(ctx: Context, state: FsmState, fileId: string) {
   const adminId = process.env.ADMIN_TELEGRAM_ID
   if (!adminId) return
-
   const usernameLabel = state.username ? `@${state.username}` : `id:${state.telegramId}`
-
   const caption = [
     "📦 Нове замовлення книги!",
     "",
@@ -233,7 +197,6 @@ async function notifyAdmin(ctx: Context, state: FsmState, fileId: string) {
     "",
     "🖼 Скріншот оплати ⬆️",
   ].join("\n")
-
   try {
     await ctx.api.sendPhoto(adminId, fileId, { caption })
   } catch (err) {
